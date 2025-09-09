@@ -1,26 +1,26 @@
 import { parseEther } from 'viem';
-import { useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
+import { useWriteContract, useConfig } from 'wagmi';
+import { waitForTransactionReceipt } from 'wagmi/actions';
 import { STAKING_TOKEN_ABI } from '../config/ABI.js';
 
 const STAKING_CONTRACT_ADDRESS = import.meta.env.VITE_STAKING_CONTRACT;
 const STAKING_TOKEN_ADDRESS = import.meta.env.VITE_STAKING_TOKEN;
 
 export const useTokenApproval = () => {
-  const { writeContractAsync, data: hash, error, isPending } = useWriteContract();
+  const { writeContractAsync, error, isPending } = useWriteContract();
+  const config = useConfig();
   
-  const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
-    hash,
-  });
 
   const approveToken = async (amount) => {
     const amountWei = parseEther(amount);
-    const result = await writeContractAsync({
+    const hash = await writeContractAsync({
       address: STAKING_TOKEN_ADDRESS,
       abi: STAKING_TOKEN_ABI,
       functionName: 'approve',
       args: [STAKING_CONTRACT_ADDRESS, amountWei],
     });
-    return result;
+    await waitForTransactionReceipt(config, { hash });
+    return hash;
   };
 
  
@@ -37,9 +37,6 @@ export const useTokenApproval = () => {
     approveToken,
     needsApproval,
     isPending,
-    isConfirming,
-    isConfirmed,
     error,
-    hash,
   };
 };

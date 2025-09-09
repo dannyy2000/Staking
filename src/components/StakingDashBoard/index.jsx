@@ -4,6 +4,17 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 import { 
   AlertTriangle, 
   ArrowUpCircle,
@@ -19,13 +30,15 @@ import { useStake } from '@/hooks/useStake';
 import { useWithdraw } from '@/hooks/useWithdraw';
 import { useClaimRewards } from '@/hooks/useClaimRewards';
 import { useEmergencyWithdraw } from '@/hooks/useEmergencyWithdraw';
-import { formatTokenAmount, formatAPR } from '@/utils/formatters';
+import { formatTokenAmount, formatAPR, formatTimeRemaining } from '@/utils/formatters';
 
 export default function StakingDashboard() {
   const [stakeAmount, setStakeAmount] = useState('');
   const [withdrawAmount, setWithdrawAmount] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState('');
+  const [isEmergencyDialogOpen, setIsEmergencyDialogOpen] = useState(false);
+  const [isEmergencySubmitting, setIsEmergencySubmitting] = useState(false);
 
   const {
     userDetails,
@@ -39,56 +52,26 @@ export default function StakingDashboard() {
     refetchAllowance,
   } = useContractData();
 
-  const {approveToken,needsApproval,isPending: isApprovePending,isConfirmed: isApproveConfirmed,  } = useTokenApproval();
+const { approveToken, needsApproval, isPending: isApprovePending } = useTokenApproval();
 
 
-  const {
-    stake,
-    isPending: isStakePending,
-    isConfirmed: isStakeConfirmed,
-    error: stakeError,
-  } = useStake();
-
-  // Withdrawal
-  const {
-    withdraw,
-    isPending: isWithdrawPending,
-    isConfirmed: isWithdrawConfirmed,
-    error: withdrawError,
-  } = useWithdraw();
-
-
-  const {
-    claimRewards,
-    isPending: isClaimPending,
-    isConfirmed: isClaimConfirmed,
-    error: claimError,
-  } = useClaimRewards();
+const { stake, isPending: isStakePending, error: stakeError } = useStake();
 
  
-  const {
+const { withdraw, isPending: isWithdrawPending, error: withdrawError } = useWithdraw();
+
+
+const { claimRewards, isPending: isClaimPending, error: claimError } = useClaimRewards();
+
+ 
+const {
     emergencyWithdraw,
     isPending: isEmergencyPending,
-    isConfirmed: isEmergencyConfirmed,
     error: emergencyError,
   } = useEmergencyWithdraw();
 
  
-  const isAnyPending = isStakePending || isWithdrawPending || isClaimPending || isEmergencyPending || isApprovePending;
-  const isAnyConfirming = false; 
-
- 
-  useEffect(() => {
-    if (isStakeConfirmed || isWithdrawConfirmed || isClaimConfirmed || isEmergencyConfirmed || isApproveConfirmed) {
-      setMessage('Transaction confirmed successfully!');
-      setStakeAmount('');
-      setWithdrawAmount('');
-      refetchUserDetails();
-      refetchBalance();
-      refetchAllowance();
-      setTimeout(() => setMessage(''), 5000);
-    }
-  }, [isStakeConfirmed, isWithdrawConfirmed, isClaimConfirmed, isEmergencyConfirmed, isApproveConfirmed]);
+const isAnyPending = isStakePending || isWithdrawPending || isClaimPending || isEmergencyPending || isApprovePending;
 
 
   useEffect(() => {
@@ -100,40 +83,78 @@ export default function StakingDashboard() {
   }, [stakeError, withdrawError, claimError, emergencyError]);
 
   const handleStake = async () => {
-    if (!stakeAmount) return;
+    if (!stakeAmount) {
+      setMessage('Please enter a stake amount');
+      return;
+    }
+    
+
+    if (!tokenBalance || tokenBalance.value === 0n) {
+      setMessage('You need STA tokens to stake. Your balance is 0.');
+      return;
+    }
+    
+    const amount = parseFloat(stakeAmount);
+    if (isNaN(amount) || amount <= 0) {
+      setMessage('Please enter a valid amount');
+      return;
+    }
     
     setIsLoading(true);
     setMessage('');
     
     try {
+      
       if (needsApproval(stakeAmount, allowance)) {
         setMessage('Approving tokens...');
         await approveToken(stakeAmount);
-        setMessage('Approval successful! Now staking...');
+        setMessage('Tokens approved. Now staking...');
+      
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
       
+      setMessage('Staking tokens...');
       await stake(stakeAmount);
-      setMessage('Staking transaction submitted!');
+setMessage('Stake confirmed');
+      setStakeAmount('');
+      await Promise.all([refetchUserDetails(), refetchBalance(), refetchAllowance()]);
+      
     } catch (err) {
       console.error('Staking error:', err);
-      setMessage(`Error: ${err.message || 'Failed to stake'}`);
+      setMessage(`Error: ${err.shortMessage || err.message || 'Transaction failed'}`);
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleWithdraw = async () => {
-    if (!withdrawAmount) return;
+    if (!withdrawAmount) {
+      setMessage('Please enter a withdrawal amount');
+      return;
+    }
+    
+    const amount = parseFloat(withdrawAmount);
+    if (isNaN(amount) || amount <= 0) {
+      setMessage('Please enter a valid amount');
+      return;
+    }
+    
+    if (userDetails && amount > parseFloat(formatTokenAmount(userDetails.stakedAmount))) {
+      setMessage('Cannot withdraw more than staked amount');
+      return;
+    }
     
     setIsLoading(true);
     setMessage('');
     
     try {
-      await withdraw(withdrawAmount);
-      setMessage('Withdrawal transaction submitted!');
+await withdraw(withdrawAmount);
+      setMessage('Withdraw confirmed');
+      setWithdrawAmount('');
+      await Promise.all([refetchUserDetails(), refetchBalance(), refetchAllowance()]);
     } catch (err) {
       console.error('Withdrawal error:', err);
-      setMessage(`Error: ${err.message || 'Failed to withdraw'}`);
+      setMessage(`Error: ${err.shortMessage || err.message || 'Failed to withdraw'}`);
     } finally {
       setIsLoading(false);
     }
@@ -144,31 +165,31 @@ export default function StakingDashboard() {
     setMessage('');
     
     try {
-      await claimRewards();
-      setMessage('Claim rewards transaction submitted!');
+await claimRewards();
+      setMessage('Rewards claimed');
+      await Promise.all([refetchUserDetails(), refetchBalance(), refetchAllowance()]);
     } catch (err) {
       console.error('Claim rewards error:', err);
-      setMessage(`Error: ${err.message || 'Failed to claim rewards'}`);
+      setMessage(`Error: ${err.shortMessage || err.message || 'Failed to claim rewards'}`);
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleEmergencyWithdraw = async () => {
-    if (!window.confirm('Are you sure? This will forfeit all rewards and may include penalties.')) {
-      return;
-    }
-    
+    setIsEmergencySubmitting(true);
     setIsLoading(true);
     setMessage('');
-    
+
     try {
       await emergencyWithdraw();
-      setMessage('Emergency withdrawal transaction submitted!');
+      setMessage('Emergency withdraw confirmed');
+      await Promise.all([refetchUserDetails(), refetchBalance(), refetchAllowance()]);
+      setIsEmergencyDialogOpen(false);
     } catch (err) {
-      console.error('Emergency withdrawal error:', err);
-      setMessage(`Error: ${err.message || 'Failed to emergency withdraw'}`);
+      setMessage(`Error: ${err.shortMessage || err.message || 'Failed to emergency withdraw'}`);
     } finally {
+      setIsEmergencySubmitting(false);
       setIsLoading(false);
     }
   };
@@ -227,6 +248,7 @@ export default function StakingDashboard() {
           </Card>
         )}
 
+
         {/* Protocol Stats */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <Card>
@@ -253,6 +275,14 @@ export default function StakingDashboard() {
             </CardHeader>
             <CardContent>
               <p className="text-2xl font-bold">{tokenBalance ? formatTokenAmount(tokenBalance.value) : '0'} {tokenSymbol}</p>
+              {(!tokenBalance || tokenBalance.value === 0n) && (
+                <div className="text-xs text-orange-600 mt-1">
+                  <p>⚠️ You need {tokenSymbol} tokens to stake.</p>
+                  <p className="mt-1 font-mono text-xs break-all">
+                    Token: {import.meta.env.VITE_STAKING_TOKEN}
+                  </p>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -275,8 +305,10 @@ export default function StakingDashboard() {
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Lock Status</p>
-                  <p className="text-lg font-semibold">
-                    {userDetails.canWithdraw ? 'Unlocked' : `Locked (${userDetails.timeUntilUnlock}s remaining)`}
+<p className="text-lg font-semibold">
+                    {userDetails.canWithdraw
+                      ? 'Unlocked'
+                      : `Locked (${formatTimeRemaining(Number(userDetails.timeUntilUnlock))})`}
                   </p>
                 </div>
               </div>
@@ -314,7 +346,7 @@ export default function StakingDashboard() {
               <Button 
                 variant="default" 
                 className="w-full" 
-                disabled={!stakeAmount || isLoading || isAnyPending}
+                disabled={!stakeAmount || isLoading || isAnyPending || (!tokenBalance || tokenBalance.value === 0n)}
                 onClick={handleStake}
               >
                 {isLoading || isAnyPending ? (
@@ -322,6 +354,10 @@ export default function StakingDashboard() {
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     {isLoading ? 'Processing...' : 'Confirming...'}
                   </>
+                ) : (!tokenBalance || tokenBalance.value === 0n) ? (
+                  'Need Tokens to Stake'
+                ) : !stakeAmount ? (
+                  'Enter Amount to Stake'
                 ) : (
                   'Stake Tokens'
                 )}
@@ -343,7 +379,7 @@ export default function StakingDashboard() {
               <Button 
                 variant="default" 
                 className="w-full"
-                disabled={!userDetails?.pendingRewards || userDetails.pendingRewards === 0n || isLoading || isAnyPending}
+                disabled={(!userDetails?.pendingRewards || userDetails.pendingRewards === 0n) || isLoading || isAnyPending}
                 onClick={handleClaimRewards}
               >
                 {isLoading || isAnyPending ? (
@@ -392,12 +428,12 @@ export default function StakingDashboard() {
                 )}
               </Button>
 
-              
+
             </CardContent>
           </Card>
         </div>
 
-        {/* Emergency Section */}
+        {/* Emergency Section - ALWAYS VISIBLE */}
         <Card className="border-destructive/50">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-destructive">
@@ -419,21 +455,84 @@ export default function StakingDashboard() {
               </div>
             </div>
             
-            <Button 
-              variant="destructive" 
-              className="w-full md:w-auto"
-              disabled={!userDetails?.stakedAmount || userDetails.stakedAmount === 0n || isLoading || isAnyPending}
-              onClick={handleEmergencyWithdraw}
+            <AlertDialog
+              open={isEmergencyDialogOpen}
+              onOpenChange={(open) => {
+                if (!isEmergencySubmitting) setIsEmergencyDialogOpen(open);
+              }}
             >
-              {isLoading || isAnyPending ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Processing...
-                </>
-              ) : (
-                'Emergency Withdraw All'
-              )}
-            </Button>
+              <AlertDialogTrigger asChild>
+                <Button 
+                  variant="destructive" 
+                  className="w-full md:w-auto bg-red-600 text-white hover:bg-red-700"
+                  disabled={isLoading || isAnyPending || !userDetails || userDetails.stakedAmount === 0n}
+                >
+                  {isLoading || isAnyPending ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Processing...
+                    </>
+                  ) : (
+                    'Emergency Withdraw All'
+                  )}
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader className="text-left">
+                  <AlertDialogTitle className="flex items-center gap-2 text-destructive">
+                    <AlertTriangle className="h-5 w-5" />
+                    Confirm Emergency Withdrawal
+                  </AlertDialogTitle>
+                  <AlertDialogDescription className="text-neutral-700 dark:text-neutral-300">
+                    This will immediately withdraw all your staked tokens.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+
+                <div className="space-y-3">
+                  <div className="rounded-md border p-3 text-sm bg-red-50 dark:bg-red-900/30 border-red-300 dark:border-red-600/40">
+                    <p className="font-medium text-red-700 dark:text-red-300 flex items-center gap-2">
+                      <AlertTriangle className="h-4 w-4" />
+                      Warning
+                    </p>
+                    <ul className="list-disc list-inside mt-2 space-y-1 text-red-800 dark:text-red-200">
+                      <li>All pending rewards will be forfeited</li>
+                      <li>A penalty fee may be applied</li>
+                      <li>This action cannot be undone</li>
+                    </ul>
+                  </div>
+
+                  {userDetails && (
+                    <div className="rounded-md border p-3 text-sm bg-gray-100 dark:bg-neutral-800 border-neutral-200 dark:border-neutral-700">
+                      <div className="flex items-center justify-between">
+                        <span className="text-neutral-600 dark:text-neutral-300">You will withdraw</span>
+                        <span className="font-medium">
+                          {formatTokenAmount(userDetails.stakedAmount)} {tokenSymbol}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={isEmergencySubmitting}>Cancel</AlertDialogCancel>
+                  <Button
+                    type="button"
+                    onClick={handleEmergencyWithdraw}
+                    disabled={isEmergencySubmitting}
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    {isEmergencySubmitting ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Withdrawing...
+                      </>
+                    ) : (
+                      'Yes, Emergency Withdraw All'
+                    )}
+                  </Button>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </CardContent>
         </Card>
 
