@@ -24,9 +24,11 @@ import {
   CheckCircle,
   Info
 } from 'lucide-react';
-import { useContractData } from '@/hooks/useContractData';
+// import { useContractData } from '@/hooks/useContractData';
+import  useContractData  from '@/hooks/useContractData';
+
 import { useTokenApproval } from '@/hooks/useTokenApproval';
-import { useStake } from '@/hooks/useStake';
+import  {useStake } from '@/hooks/useStake';
 import { useWithdraw } from '@/hooks/useWithdraw';
 import { useClaimRewards } from '@/hooks/useClaimRewards';
 import { useEmergencyWithdraw } from '@/hooks/useEmergencyWithdraw';
@@ -35,27 +37,30 @@ import { formatTokenAmount, formatAPR, formatTimeRemaining } from '@/utils/forma
 export default function StakingDashboard() {
   const [stakeAmount, setStakeAmount] = useState('');
   const [withdrawAmount, setWithdrawAmount] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [isEmergencyDialogOpen, setIsEmergencyDialogOpen] = useState(false);
   const [isEmergencySubmitting, setIsEmergencySubmitting] = useState(false);
 
-  const {
-    userDetails,
-    totalStaked,
-    initialApr,
-    tokenSymbol,
-    tokenBalance,
-    allowance,
-    refetchUserDetails,
-    refetchBalance,
-    refetchAllowance,
+  // Per-action loading states so only the pressed button shows a spinner
+  const [isApprovingLocal, setIsApprovingLocal] = useState(false);
+  const [isStakingLocal, setIsStakingLocal] = useState(false);
+  const [isWithdrawingLocal, setIsWithdrawingLocal] = useState(false);
+  const [isClaimingLocal, setIsClaimingLocal] = useState(false);
+  
+  // Track if user has approved for current session
+  const [hasApprovedInSession, setHasApprovedInSession] = useState(false);
+
+  const {userDetails,totalStaked,initialApr,tokenSymbol,tokenBalance,allowance,refetchUserDetails,refetchBalance,refetchAllowance,
   } = useContractData();
+  //   const {totalStaked,initialApr,tokenSymbol,tokenBalance,allowance,refetchBalance,refetchAllowance,
+  // } = useContractData();
 
 const { approveToken, needsApproval, isPending: isApprovePending } = useTokenApproval();
 
 
 const { stake, isPending: isStakePending, error: stakeError } = useStake();
+// const { stake } = useStake();
+
 
  
 const { withdraw, isPending: isWithdrawPending, error: withdrawError } = useWithdraw();
@@ -71,7 +76,13 @@ const {
   } = useEmergencyWithdraw();
 
  
-const isAnyPending = isStakePending || isWithdrawPending || isClaimPending || isEmergencyPending || isApprovePending;
+const approvalNeeded = stakeAmount ? needsApproval(stakeAmount, allowance) : false;
+
+// Disable other actions while one is running (but only the active one shows a spinner)
+const isBusy = (
+  isApprovePending || isStakePending || isWithdrawPending || isClaimPending || isEmergencyPending ||
+  isApprovingLocal || isStakingLocal || isWithdrawingLocal || isClaimingLocal || isEmergencySubmitting
+);
 
 
   useEffect(() => {
@@ -82,48 +93,70 @@ const isAnyPending = isStakePending || isWithdrawPending || isClaimPending || is
     }
   }, [stakeError, withdrawError, claimError, emergencyError]);
 
-  const handleStake = async () => {
+  const handleApprove = async () => {
     if (!stakeAmount) {
-      setMessage('Please enter a stake amount');
+      setMessage('Please enter an amount to approve');
       return;
     }
-    
-
-    if (!tokenBalance || tokenBalance.value === 0n) {
-      setMessage('You need STA tokens to stake. Your balance is 0.');
-      return;
-    }
-    
     const amount = parseFloat(stakeAmount);
     if (isNaN(amount) || amount <= 0) {
       setMessage('Please enter a valid amount');
       return;
     }
-    
-    setIsLoading(true);
+
+    setIsApprovingLocal(true);
     setMessage('');
-    
     try {
-      
-      if (needsApproval(stakeAmount, allowance)) {
-        setMessage('Approving tokens...');
-        await approveToken(stakeAmount);
-        setMessage('Tokens approved. Now staking...');
-      
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      }
-      
+      setMessage('Approving tokens...');
+      await approveToken(stakeAmount);
+      setMessage('Tokens approved. You can now stake.');
+      setHasApprovedInSession(true); // Mark as approved for this session
+      await Promise.all([refetchAllowance(), refetchBalance()]);
+    } catch (err) {
+      console.error('Approve error:', err);
+      setMessage(`Error: ${err.shortMessage || err.message || 'Approval failed'}`);
+    } finally {
+      setIsApprovingLocal(false);
+    }
+  };
+
+  const handleStake = async () => {
+    if (!stakeAmount) {
+      setMessage('Please enter a stake amount');
+      return;
+    }
+
+    if (!tokenBalance || tokenBalance.value === 0n) {
+      setMessage('You need STA tokens to stake. Your balance is 0.');
+      return;
+    }
+
+    const amount = parseFloat(stakeAmount);
+    if (isNaN(amount) || amount <= 0) {
+      setMessage('Please enter a valid amount');
+      return;
+    }
+
+    if (approvalNeeded) {
+      setMessage('Approval required for this amount. Please approve first.');
+      return;
+    }
+
+    setIsStakingLocal(true);
+    setMessage('');
+
+    try {
       setMessage('Staking tokens...');
       await stake(stakeAmount);
-setMessage('Stake confirmed');
+      setMessage('Stake confirmed');
       setStakeAmount('');
+      setHasApprovedInSession(false); // Reset approval state after staking
       await Promise.all([refetchUserDetails(), refetchBalance(), refetchAllowance()]);
-      
     } catch (err) {
       console.error('Staking error:', err);
       setMessage(`Error: ${err.shortMessage || err.message || 'Transaction failed'}`);
     } finally {
-      setIsLoading(false);
+      setIsStakingLocal(false);
     }
   };
 
@@ -132,23 +165,23 @@ setMessage('Stake confirmed');
       setMessage('Please enter a withdrawal amount');
       return;
     }
-    
+
     const amount = parseFloat(withdrawAmount);
     if (isNaN(amount) || amount <= 0) {
       setMessage('Please enter a valid amount');
       return;
     }
-    
+
     if (userDetails && amount > parseFloat(formatTokenAmount(userDetails.stakedAmount))) {
       setMessage('Cannot withdraw more than staked amount');
       return;
     }
-    
-    setIsLoading(true);
+
+    setIsWithdrawingLocal(true);
     setMessage('');
-    
+
     try {
-await withdraw(withdrawAmount);
+      await withdraw(withdrawAmount);
       setMessage('Withdraw confirmed');
       setWithdrawAmount('');
       await Promise.all([refetchUserDetails(), refetchBalance(), refetchAllowance()]);
@@ -156,29 +189,28 @@ await withdraw(withdrawAmount);
       console.error('Withdrawal error:', err);
       setMessage(`Error: ${err.shortMessage || err.message || 'Failed to withdraw'}`);
     } finally {
-      setIsLoading(false);
+      setIsWithdrawingLocal(false);
     }
   };
 
   const handleClaimRewards = async () => {
-    setIsLoading(true);
+    setIsClaimingLocal(true);
     setMessage('');
-    
+
     try {
-await claimRewards();
+      await claimRewards();
       setMessage('Rewards claimed');
       await Promise.all([refetchUserDetails(), refetchBalance(), refetchAllowance()]);
     } catch (err) {
       console.error('Claim rewards error:', err);
       setMessage(`Error: ${err.shortMessage || err.message || 'Failed to claim rewards'}`);
     } finally {
-      setIsLoading(false);
+      setIsClaimingLocal(false);
     }
   };
 
   const handleEmergencyWithdraw = async () => {
     setIsEmergencySubmitting(true);
-    setIsLoading(true);
     setMessage('');
 
     try {
@@ -190,7 +222,6 @@ await claimRewards();
       setMessage(`Error: ${err.shortMessage || err.message || 'Failed to emergency withdraw'}`);
     } finally {
       setIsEmergencySubmitting(false);
-      setIsLoading(false);
     }
   };
 
@@ -207,247 +238,310 @@ await claimRewards();
   };
 
   return (
-    <div className="min-h-screen bg-background p-4 md:p-6 lg:p-8">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
       {/* Header */}
-      <header className="mb-8">
-        <div className="flex items-center justify-between max-w-4xl mx-auto">
-          <div>
-            <h1 className="text-3xl font-bold text-foreground">
-              Staking Protocol
-            </h1>
-         
+      <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 sticky top-0 z-40">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center justify-between h-16">
+            <div className="flex items-center space-x-4">
+              <div className="flex-shrink-0">
+                <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+                  <span className="text-white font-bold text-sm">S</span>
+                </div>
+              </div>
+              <div>
+                <h1 className="text-xl font-semibold text-gray-900 dark:text-white">
+                  Staking Dapp
+                </h1>
+              </div>
+            </div>
+            <ConnectButton />
           </div>
-          <ConnectButton />
         </div>
       </header>
 
-      <div className="max-w-4xl mx-auto space-y-6">
-        {/* Message Display */}
-        {message && (
-          <Card className={`border ${
-            message.includes('Error') ? 'border-red-500 bg-red-50' : 
-            message.includes('success') || message.includes('confirmed') ? 'border-green-500 bg-green-50' :
-            'border-blue-500 bg-blue-50'
-          }`}>
-            <CardContent className="flex items-center gap-2 pt-4">
-              {message.includes('Error') ? (
-                <AlertTriangle className="h-4 w-4 text-red-500" />
-              ) : message.includes('success') || message.includes('confirmed') ? (
-                <CheckCircle className="h-4 w-4 text-green-500" />
-              ) : (
-                <Info className="h-4 w-4 text-blue-500" />
-              )}
-              <span className={`text-sm ${
-                message.includes('Error') ? 'text-red-700' :
-                message.includes('success') || message.includes('confirmed') ? 'text-green-700' :
-                'text-blue-700'
-              }`}>
-                {message}
-              </span>
-            </CardContent>
-          </Card>
-        )}
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="space-y-8">
+          {/* Message Display */}
+          {message && (
+            <div className={`rounded-lg p-4 ${
+              message.includes('Error') ? 'bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800' : 
+              message.includes('success') || message.includes('confirmed') ? 'bg-green-50 border border-green-200 dark:bg-green-900/20 dark:border-green-800' :
+              'bg-blue-50 border border-blue-200 dark:bg-blue-900/20 dark:border-blue-800'
+            }`}>
+              <div className="flex items-center space-x-3">
+                {message.includes('Error') ? (
+                  <AlertTriangle className="h-5 w-5 text-red-600 dark:text-red-400" />
+                ) : message.includes('success') || message.includes('confirmed') ? (
+                  <CheckCircle className="h-5 w-5 text-green-600 dark:text-green-400" />
+                ) : (
+                  <Info className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+                )}
+                <span className={`text-sm font-medium ${
+                  message.includes('Error') ? 'text-red-800 dark:text-red-200' :
+                  message.includes('success') || message.includes('confirmed') ? 'text-green-800 dark:text-green-200' :
+                  'text-blue-800 dark:text-blue-200'
+                }`}>
+                  {message}
+                </span>
+              </div>
+            </div>
+          )}
 
 
-        {/* Protocol Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Total Staked</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold">{formatTokenAmount(totalStaked)} {tokenSymbol}</p>
-            </CardContent>
-          </Card>
-          
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Current APR</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold">{formatAPR(initialApr)}</p>
-            </CardContent>
-          </Card>
-          
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Your Balance</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold">{tokenBalance ? formatTokenAmount(tokenBalance.value) : '0'} {tokenSymbol}</p>
-              {(!tokenBalance || tokenBalance.value === 0n) && (
-                <div className="text-xs text-orange-600 mt-1">
-                  <p>⚠️ You need {tokenSymbol} tokens to stake.</p>
-                  <p className="mt-1 font-mono text-xs break-all">
-                    Token: {import.meta.env.VITE_STAKING_TOKEN}
+          {/* Protocol Stats */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Total Staked</p>
+                  <p className="text-2xl font-bold text-gray-900 dark:text-white mt-1">
+                    {formatTokenAmount(totalStaked)} {tokenSymbol}
                   </p>
                 </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
+                <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-lg flex items-center justify-center">
+                  <ArrowUpCircle className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+                </div>
+              </div>
+            </div>
+            
+            <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Current APR</p>
+                  <p className="text-2xl font-bold text-green-600 dark:text-green-400 mt-1">
+                    {formatAPR(initialApr)}
+                  </p>
+                </div>
+                <div className="w-12 h-12 bg-green-100 dark:bg-green-900/30 rounded-lg flex items-center justify-center">
+                  <CheckCircle className="w-6 h-6 text-green-600 dark:text-green-400" />
+                </div>
+              </div>
+            </div>
+            
+            <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Your Balance</p>
+                  <p className="text-2xl font-bold text-gray-900 dark:text-white mt-1">
+                    {tokenBalance ? formatTokenAmount(tokenBalance.value) : '0'} {tokenSymbol}
+                  </p>
+                  {(!tokenBalance || tokenBalance.value === 0n) && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">No tokens available</p>
+                  )}
+                </div>
+                <div className="w-12 h-12 bg-purple-100 dark:bg-purple-900/30 rounded-lg flex items-center justify-center">
+                  <Info className="w-6 h-6 text-purple-600 dark:text-purple-400" />
+                </div>
+              </div>
+            </div>
+          </div>
 
-        {/* User Position */}
-        {userDetails && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Your Staking Position</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <p className="text-sm text-muted-foreground">Staked Amount</p>
-                  <p className="text-lg font-semibold">{formatTokenAmount(userDetails.stakedAmount)} {tokenSymbol}</p>
+          {/* User Position */}
+          {userDetails && (
+            <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6">
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-6">Your Staking Position</h2>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="text-center p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                  <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Staked Amount</p>
+                  <p className="text-xl font-bold text-gray-900 dark:text-white mt-2">
+                    {formatTokenAmount(userDetails.stakedAmount)} {tokenSymbol}
+                  </p>
                 </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Pending Rewards</p>
-                  <p className="text-lg font-semibold">{formatTokenAmount(userDetails.pendingRewards)} {tokenSymbol}</p>
+                <div className="text-center p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                  <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Pending Rewards</p>
+                  <p className="text-xl font-bold text-green-600 dark:text-green-400 mt-2">
+                    {formatTokenAmount(userDetails.pendingRewards)} {tokenSymbol}
+                  </p>
                 </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Lock Status</p>
-<p className="text-lg font-semibold">
+                <div className="text-center p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                  <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Lock Status</p>
+                  <p className={`text-xl font-bold mt-2 ${
+                    userDetails.canWithdraw ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'
+                  }`}>
                     {userDetails.canWithdraw
                       ? 'Unlocked'
-                      : `Locked (${formatTimeRemaining(Number(userDetails.timeUntilUnlock))})`}
+                      : formatTimeRemaining(Number(userDetails.timeUntilUnlock))}
                   </p>
                 </div>
               </div>
-            </CardContent>
-          </Card>
-        )}
+            </div>
+          )}
 
-        {/* Main Interface */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Staking Section */}
-          <Card className="border">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <ArrowUpCircle className="h-5 w-5" />
-                Stake Tokens
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Amount to Stake</label>
-                <div className="flex gap-2">
-                  <Input
-                    type="number"
-                    placeholder="0.00"
-                    value={stakeAmount}
-                    onChange={(e) => setStakeAmount(e.target.value)}
-                    className="flex-1"
-                  />
-                  <Button variant="outline" size="sm" onClick={setMaxStake}>
-                    Max
-                  </Button>
+          {/* Main Interface */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            {/* Staking Section */}
+            <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6">
+              <div className="flex items-center space-x-3 mb-6">
+                <div className="w-10 h-10 bg-blue-100 dark:bg-blue-900/30 rounded-lg flex items-center justify-center">
+                  <ArrowUpCircle className="w-5 h-5 text-blue-600 dark:text-blue-400" />
                 </div>
+                <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Stake Tokens</h2>
               </div>
 
-              <Button 
-                variant="default" 
-                className="w-full" 
-                disabled={!stakeAmount || isLoading || isAnyPending || (!tokenBalance || tokenBalance.value === 0n)}
-                onClick={handleStake}
-              >
-                {isLoading || isAnyPending ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    {isLoading ? 'Processing...' : 'Confirming...'}
-                  </>
-                ) : (!tokenBalance || tokenBalance.value === 0n) ? (
-                  'Need Tokens to Stake'
-                ) : !stakeAmount ? (
-                  'Enter Amount to Stake'
-                ) : (
-                  'Stake Tokens'
-                )}
-              </Button>
-
-            
-            </CardContent>
-          </Card>
-
-          {/* Withdrawal Section */}
-          <Card className="border">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <ArrowDownCircle className="h-5 w-5" />
-                Withdraw
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <Button 
-                variant="default" 
-                className="w-full"
-                disabled={(!userDetails?.pendingRewards || userDetails.pendingRewards === 0n) || isLoading || isAnyPending}
-                onClick={handleClaimRewards}
-              >
-                {isLoading || isAnyPending ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Processing...
-                  </>
-                ) : (
-                  `Claim Rewards (${userDetails ? formatTokenAmount(userDetails.pendingRewards) : '0'} ${tokenSymbol})`
-                )}
-              </Button>
-
-              <Separator />
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Amount to Withdraw</label>
-                <div className="flex gap-2">
-                  <Input
-                    type="number"
-                    placeholder="0.00"
-                    value={withdrawAmount}
-                    onChange={(e) => setWithdrawAmount(e.target.value)}
-                    className="flex-1"
-                  />
-                  <Button variant="outline" size="sm" onClick={setMaxWithdraw}>
-                    Max
-                  </Button>
-                </div>
-              </div>
-
-              <Button 
-                variant="secondary" 
-                className="w-full"
-                disabled={!withdrawAmount || !userDetails?.canWithdraw || isLoading || isAnyPending}
-                onClick={handleWithdraw}
-              >
-                {isLoading || isAnyPending ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Processing...
-                  </>
-                ) : userDetails?.canWithdraw ? (
-                  'Withdraw'
-                ) : (
-                  'Locked - Cannot Withdraw Yet'
-                )}
-              </Button>
-
-
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Emergency Section - ALWAYS VISIBLE */}
-        <Card className="border-destructive/50">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-destructive">
-              <AlertTriangle className="h-5 w-5" />
-              Emergency Actions
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="p-4 rounded-lg bg-destructive/5 border border-destructive/20">
-              <div className="flex items-start gap-3">
-                <Shield className="h-5 w-5 text-destructive mt-0.5" />
+              <div className="space-y-6">
+                {/* Amount input */}
                 <div>
-                  <h3 className="font-medium text-destructive mb-1">Emergency Withdrawal</h3>
-                  <p className="text-sm text-muted-foreground">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Amount to stake
+                  </label>
+                  <div className="flex space-x-3">
+                    <Input
+                      type="number"
+                      placeholder="0.00"
+                      value={stakeAmount}
+                      onChange={(e) => {
+                        setStakeAmount(e.target.value);
+                        setHasApprovedInSession(false); // Reset approval when amount changes
+                      }}
+                      className="flex-1 h-12 text-lg font-bold border-2 border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 dark:border-gray-600 dark:focus:border-blue-400 transition-all duration-200 bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-200"
+                    />
+                    <Button 
+                      variant="outline" 
+                      onClick={setMaxStake}
+                      className="h-12 px-6 font-bold text-base border-2 border-gray-400 hover:border-blue-500 hover:bg-blue-50 hover:text-blue-600 dark:border-gray-500 dark:hover:border-blue-400 dark:hover:bg-blue-950/30 transition-all duration-200 shadow-sm hover:shadow-md"
+                    >
+                      Max
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Action buttons */}
+                <div className="grid grid-cols-2 gap-4">
+                  <Button
+                    variant="outline"
+                    size="lg"
+                    disabled={!stakeAmount || isBusy}
+                    onClick={handleApprove}
+                    className="h-14 text-base font-bold border-2 border-blue-500 text-blue-600 hover:bg-blue-50 hover:border-blue-600 dark:border-blue-400 dark:text-blue-400 dark:hover:bg-blue-950/30 transition-all duration-200 shadow-md hover:shadow-lg disabled:bg-gray-100 disabled:border-gray-300 disabled:text-gray-400 disabled:cursor-not-allowed dark:disabled:bg-gray-800 dark:disabled:border-gray-600 dark:disabled:text-gray-500"
+                  >
+                    {(isApprovingLocal || isApprovePending) ? (
+                      <>
+                        <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                        <span className="font-bold">Approving...</span>
+                      </>
+                    ) : hasApprovedInSession ? (
+                      "Approved"
+                    ) : (
+                      "Approve"
+                    )}
+                  </Button>
+
+                  <Button 
+                    size="lg"
+                    disabled={!stakeAmount || !hasApprovedInSession || isBusy || (!tokenBalance || tokenBalance.value === 0n)}
+                    onClick={handleStake}
+                    className="h-14 text-base font-bold shadow-lg transition-all duration-200 disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed disabled:hover:shadow-lg disabled:transform-none dark:disabled:bg-gray-700 dark:disabled:text-gray-400 enabled:bg-gradient-to-r enabled:from-blue-600 enabled:to-blue-700 enabled:hover:from-blue-700 enabled:hover:to-blue-800 enabled:text-white enabled:hover:shadow-xl enabled:hover:scale-[1.02]"
+                  >
+                    {(isStakingLocal || isStakePending) ? (
+                      <>
+                        <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                        <span className="font-bold">Staking...</span>
+                      </>
+                    ) : (
+                      "Stake"
+                    )}
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {/* Withdrawal Section */}
+            <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6">
+              <div className="flex items-center space-x-3 mb-6">
+                <div className="w-10 h-10 bg-green-100 dark:bg-green-900/30 rounded-lg flex items-center justify-center">
+                  <ArrowDownCircle className="w-5 h-5 text-green-600 dark:text-green-400" />
+                </div>
+                <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Withdraw</h2>
+              </div>
+
+              <div className="space-y-6">
+                {/* Claim Rewards */}
+                <Button 
+                  size="lg"
+                  className="w-full h-14 text-base font-bold bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white shadow-lg hover:shadow-xl transform hover:scale-[1.01] transition-all duration-200"
+                  disabled={(!userDetails?.pendingRewards || userDetails.pendingRewards === 0n) || isBusy}
+                  onClick={handleClaimRewards}
+                >
+                  {(isClaimingLocal || isClaimPending) ? (
+                    <>
+                      <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                      <span className="font-bold">Claiming...</span>
+                    </>
+                  ) : (
+                    <span className="font-bold">{`Claim Rewards (${userDetails ? formatTokenAmount(userDetails.pendingRewards) : '0'} ${tokenSymbol})`}</span>
+                  )}
+                </Button>
+
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-gray-200 dark:border-gray-700" />
+                  </div>
+                  <div className="relative flex justify-center text-sm">
+                    <span className="px-2 bg-white dark:bg-gray-800 text-gray-500">or</span>
+                  </div>
+                </div>
+
+                {/* Withdraw Amount */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Amount to withdraw
+                  </label>
+                  <div className="flex space-x-3">
+                    <Input
+                      type="number"
+                      placeholder="0.00"
+                      value={withdrawAmount}
+                      onChange={(e) => setWithdrawAmount(e.target.value)}
+                      className="flex-1 h-12 text-lg font-bold border-2 border-gray-300 focus:border-orange-500 focus:ring-2 focus:ring-orange-200 dark:border-gray-600 dark:focus:border-orange-400 transition-all duration-200 bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-200"
+                    />
+                    <Button 
+                      variant="outline" 
+                      onClick={setMaxWithdraw}
+                      className="h-12 px-6 font-bold text-base border-2 border-gray-400 hover:border-orange-500 hover:bg-orange-50 hover:text-orange-600 dark:border-gray-500 dark:hover:border-orange-400 dark:hover:bg-orange-950/30 transition-all duration-200 shadow-sm hover:shadow-md"
+                    >
+                      Max
+                    </Button>
+                  </div>
+                </div>
+
+                <Button 
+                  variant="outline"
+                  size="lg"
+                  className="w-full h-14 text-base font-bold border-2 border-orange-500 text-orange-600 hover:bg-orange-50 hover:border-orange-600 dark:border-orange-400 dark:text-orange-400 dark:hover:bg-orange-950/30 shadow-md hover:shadow-lg transition-all duration-200"
+                  disabled={!withdrawAmount || !userDetails?.canWithdraw || isBusy}
+                  onClick={handleWithdraw}
+                >
+                  {(isWithdrawingLocal || isWithdrawPending) ? (
+                    <>
+                      <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                      <span className="font-bold">Withdrawing...</span>
+                    </>
+                  ) : userDetails?.canWithdraw ? (
+                    'Withdraw'
+                  ) : (
+                    'Locked - Cannot Withdraw Yet'
+                  )}
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          {/* Emergency Section */}
+          <div className="bg-red-50 dark:bg-red-900/20 rounded-xl border border-red-200 dark:border-red-800/50 p-6">
+            <div className="flex items-center space-x-3 mb-4">
+              <div className="w-10 h-10 bg-red-100 dark:bg-red-900/50 rounded-lg flex items-center justify-center">
+                <AlertTriangle className="w-5 h-5 text-red-600 dark:text-red-400" />
+              </div>
+              <h2 className="text-lg font-semibold text-red-900 dark:text-red-100">Emergency Actions</h2>
+            </div>
+
+            <div className="bg-white/60 dark:bg-red-950/30 rounded-lg p-4 mb-6">
+              <div className="flex items-start space-x-3">
+                <Shield className="w-5 h-5 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
+                <div>
+                  <h3 className="font-medium text-red-900 dark:text-red-100 mb-2">Emergency Withdrawal</h3>
+                  <p className="text-sm text-red-700 dark:text-red-300 leading-relaxed">
                     Immediately withdraw all staked tokens. This action will forfeit all pending rewards 
                     and may incur a penalty fee. Only use in emergency situations.
                   </p>
@@ -464,13 +558,13 @@ await claimRewards();
               <AlertDialogTrigger asChild>
                 <Button 
                   variant="destructive" 
-                  className="w-full md:w-auto bg-red-600 text-white hover:bg-red-700"
-                  disabled={isLoading || isAnyPending || !userDetails || userDetails.stakedAmount === 0n}
+                  className="w-full md:w-auto h-12 text-base font-bold bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white shadow-lg hover:shadow-xl transition-all duration-200"
+                  disabled={isBusy || !userDetails || userDetails.stakedAmount === 0n}
                 >
-                  {isLoading || isAnyPending ? (
+                  {(isEmergencySubmitting || isEmergencyPending) ? (
                     <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Processing...
+                      <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                      <span className="font-bold">Processing...</span>
                     </>
                   ) : (
                     'Emergency Withdraw All'
@@ -533,10 +627,8 @@ await claimRewards();
                 </AlertDialogFooter>
               </AlertDialogContent>
             </AlertDialog>
-          </CardContent>
-        </Card>
-
-       
+          </div>
+        </div>
       </div>
     </div>
   );
